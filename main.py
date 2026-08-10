@@ -8,7 +8,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# --- SOZLAMALAR ---
+# ==========================================
+# 1-QISM: SOZLAMALAR VA BAZA BILAN ISHLASH
+# ==========================================
 TOKEN = "8905864709:AAHz1g4blQ9SzBb3WNTBu_MnneeCXM7VSj8"
 CHANNEL_ID = -1004301284199
 REQUIRED_CHANNEL_ID = -1004301284199
@@ -18,7 +20,6 @@ ADMIN_ID = 8113271428
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Holatlar (FSM)
 class Form(StatesGroup):
     waiting_for_admin_message = State()
     waiting_for_zayafka = State()
@@ -29,7 +30,6 @@ class Form(StatesGroup):
     ep_number = State()
     ep_file = State()
 
-# Ma'lumotlar bazasini yaratish
 def db_start():
     conn = sqlite3.connect("animelar.db")
     cursor = conn.cursor()
@@ -56,7 +56,12 @@ def db_start():
     """)
     conn.commit()
     conn.close()
-    @dp.chat_join_request()
+
+
+# ==========================================
+# 2-QISM: OBUNA TEKSHIRUVI VA ADMIN PANEli
+# ==========================================
+@dp.chat_join_request()
 async def handle_join_request(update: types.ChatJoinRequest):
     if update.chat.id == REQUIRED_CHANNEL_ID:
         user_id = update.from_user.id
@@ -136,7 +141,6 @@ async def show_main_menu(message: types.Message):
         reply_markup=builder.as_markup()
     )
 
-# --- ADMIN: ANIME VA QISM QO'SHISH ---
 @dp.callback_query(F.data == "admin_add_anime")
 async def start_add_anime(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
@@ -229,7 +233,12 @@ async def process_ep_file(message: types.Message, state: FSMContext):
     
     await message.answer(f"✅ Anime uchun {ep_num}-qism muvaffaqiyatli qo'shildi!")
     await state.clear()
-        @dp.callback_query(F.data == "make_zayafka")
+
+
+# ==========================================
+# 3-QISM: QIDIRUV, TOMOSHA QILISH VA ISHGA TUSHIRISH
+# ==========================================
+@dp.callback_query(F.data == "make_zayafka")
 async def start_zayafka(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("📝 Qaysi animeni ko'rishni xohlaysiz? Anime nomini va qismlarini yozib yuboring:")
     await state.set_state(Form.waiting_for_zayafka)
