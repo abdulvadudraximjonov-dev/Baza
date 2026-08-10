@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ContentType
 
 # --- SOZLAMALAR ---
-TOKEN = "8905864709:AAHz1g4b1q9sZbB3WNTBu_MnneeCXM7VSj8"  # Sizning bot tokeningiz
+TOKEN = "8905864709:AAHz1g4blQ9SzBb3WNTBu_MnneeCXM7VSj8"  # Yangilangan token
 CHANNEL_ID = -1004301284199  # Sizning kanal ID raqamingiz
 
 bot = Bot(token=TOKEN)
@@ -69,4 +69,4 @@ async def main():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
-  
+    
