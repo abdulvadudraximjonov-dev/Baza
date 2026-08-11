@@ -12,7 +12,7 @@ CHANNEL_ID = -1004136665979  # Sizning kanal ID raqamingiz
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# 1. Ma'lumotlar bazasini yaratish (Animes va Episodes jadvallari)
+# 1. Ma'lumotlar bazasini yaratish (Animes, Episodes va Users jadvallari)
 def db_start():
     conn = sqlite3.connect("animelar.db")
     cursor = conn.cursor()
@@ -31,12 +31,27 @@ def db_start():
             FOREIGN KEY (anime_id) REFERENCES animes (id)
         )
     """)
+    # Foydalanuvchilarga xabar yuborish uchun ularning ID sini saqlaydigan jadval
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY
+        )
+    """)
     conn.commit()
     conn.close()
 
-# 2. /START BOSGANDA QO'LLANMA CHIQARISH
+# 2. /START BOSGANDA QO'LLANMA VA BAZAGA QO'SHISH
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    user_id = message.from_user.id
+    
+    # Foydalanuvchini bazaga saqlab qo'yamiz (xabar yuborish uchun kerak)
+    conn = sqlite3.connect("animelar.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+    
     guide_text = (
         f"Salom, {message.from_user.first_name}!\n\n"
         "<b>Qoʻllanma!!!</b>\n\n"
@@ -47,7 +62,7 @@ async def cmd_start(message: types.Message):
     )
     await message.answer(guide_text, parse_mode="HTML")
 
-# 3. Kanalga video tashlansa, avtomatik bazaga saqlash
+# 3. Kanalga video tashlansa, avtomatik bazaga saqlash va hammaga xabar berish
 @dp.channel_post(F.content_type == ContentType.VIDEO)
 async def auto_save_anime(message: types.Message):
     if message.chat.id == CHANNEL_ID:
@@ -57,7 +72,7 @@ async def auto_save_anime(message: types.Message):
         anime_title = ""
         ep_num = 1
         
-        # Izohdan nom va qismni ajratib olish (Masalan: "Naruto | 1" yoki "Naruto [1-qism]")
+        # Izohdan nom va qismni ajratib olish
         if "|" in caption:
             parts = caption.split("|")
             anime_title = parts[0].strip()
@@ -91,15 +106,38 @@ async def auto_save_anime(message: types.Message):
             "SELECT id FROM episodes WHERE anime_id = ? AND episode_number = ?", 
             (anime_id, ep_num)
         )
+        is_new = False
         if not cursor.fetchone():
             cursor.execute(
                 "INSERT INTO episodes (anime_id, episode_number, file_id) VALUES (?, ?, ?)", 
                 (anime_id, ep_num, file_id)
             )
             conn.commit()
-            print(f"Avtomatik saqlandi: {anime_title} — {ep_num}-qism")
+            is_new = True
+            print(f"Yangi qo'shildi: {anime_title} — {ep_num}-qism")
+        
+        # Agar haqiqatan yangi qism qo'shilgan bo'lsa, barcha foydalanuvchilarga xabar tarqatamiz
+        if is_new:
+            cursor.execute("SELECT user_id FROM users")
+            users = cursor.fetchall()
+            conn.close()
             
-        conn.close()
+            # Xabar matni
+            notification_text = (
+                f"🚨 <b>Yangi anime qismi qo'shildi!</b>\n\n"
+                f"🎬 <b>{anime_title.title()}</b> — {ep_num}-qism\n\n"
+                f"Ko'rish uchun botga anime nomini yuboring! 👇"
+            )
+            
+            # Hammaga tarqatish (bloklagan foydalanuvchilarda xatolik chiqib to'xtab qolmasligi uchun try-except ishlatamiz)
+            for user in users:
+                try:
+                    await bot.send_message(chat_id=user[0], text=notification_text, parse_mode="HTML")
+                    await asyncio.sleep(0.05) # Telegram bloklab qo'ymasligi uchun kichik tanaffus
+                except Exception:
+                    pass
+        else:
+            conn.close()
 
 # 4. Foydalanuvchi botga yozganda (Anime nomi yoki qism raqami)
 @dp.message(F.text & ~F.text.startswith("/"))
@@ -128,7 +166,7 @@ async def search_anime(message: types.Message):
             has_next = cursor.fetchone()[0] > 0
             conn.close()
             
-            caption = f"🎬 <b>{anime_title}</b> — {target_ep}-qism\n\n@barcha_animelar_shuyerda_bot"
+            caption = f"🎬 <b>{anime_title.title()}</b> — {target_ep}-qism\n\n@barcha_animelar_shuyerda_bot"
             if has_next:
                 caption += f"\n\n👉 Keyingi qismni ({target_ep + 1}-qism) ko'rmoqchi bo'lsangiz, <b>{target_ep + 1}</b> raqamini yuboring."
                 
@@ -159,7 +197,7 @@ async def search_anime(message: types.Message):
     
     if not episode:
         conn.close()
-        await message.answer(f"🎬 <b>{anime_title}</b> topildi, lekin 1-qismi hali yuklanmagan.", parse_mode="HTML")
+        await message.answer(f"🎬 <b>{anime_title.title()}</b> topildi, lekin 1-qismi hali yuklanmagan.", parse_mode="HTML")
         return
         
     file_id = episode[0]
@@ -169,7 +207,7 @@ async def search_anime(message: types.Message):
     has_next = cursor.fetchone()[0] > 0
     conn.close()
     
-    caption = f"🎬 <b>{anime_title}</b> — 1-qism\n\n@barcha_animelar_shuyerda_bot"
+    caption = f"🎬 <b>{anime_title.title()}</b> — 1-qism\n\n@barcha_animelar_shuyerda_bot"
     if has_next:
         caption += "\n\n👉 Ikkinchi qismni ko'rmoqchi bo'lsangiz, <b>2</b> raqamini yuboring."
         
