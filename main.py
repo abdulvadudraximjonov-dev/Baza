@@ -2,71 +2,104 @@ import asyncio
 import logging
 import sqlite3
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.enums import ContentType
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- SOZLAMALAR ---
-TOKEN = "8905864709:AAHz1g4blQ9SzBb3WNTBu_MnneeCXM7VSj8"  # Yangilangan token
-CHANNEL_ID = -1004301284199  # Sizning kanal ID raqamingiz
+BOT_TOKEN = "8905864709:AAHz1g4blQ9SzBb3WNTBu_MnneeCXM7VSj8"
+CHANNEL_ID = "-1004301284199"  # Telegram kanal ID raqamlari odatda oldiga -100 bilan yoziladi
+DB_NAME = "animelar.db"
 
-bot = Bot(token=TOKEN)
+# Loggingni sozlash
+logging.basicConfig(level=logging.INFO)
+
+# Bot va Dispatcher yaratish
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# 1. Ma'lumotlar bazasini yaratish
-def db_start():
-    conn = sqlite3.connect("animelar.db")
+# --- BAZANI YARATISH VA TEKSHIRISH ---
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Animelar jadvali
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS movies (
+        CREATE TABLE IF NOT EXISTS animes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            file_id TEXT
+            title TEXT NOT NULL
+        )
+    """)
+    # Qismlar jadvali
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS episodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            anime_id INTEGER,
+            episode_number INTEGER,
+            file_id TEXT NOT NULL,
+            FOREIGN KEY (anime_id) REFERENCES animes (id)
         )
     """)
     conn.commit()
     conn.close()
 
-# 2. Kanalga video tashlansa, avtomatik bazaga saqlash
-@dp.channel_post(F.content_type == ContentType.VIDEO)
-async def auto_save_anime(message: types.Message):
-    if message.chat.id == CHANNEL_ID:
-        file_id = message.video.file_id
-        title = message.caption or "Nomsiz anime"
-        
-        conn = sqlite3.connect("animelar.db")
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO movies (title, file_id) VALUES (?, ?)", (title.lower(), file_id))
-        conn.commit()
-        conn.close()
-        
-        print(f"Yangi anime bazaga qo'shildi: {title}")
+# --- START BUYrug'i ---
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        f"Salom, {message.from_user.first_name}!\n"
+        "Animix botiga xush kelibsiz. Anime nomini yozing yoki qism tanlang."
+    )
 
-# 3. Foydalanuvchi botga yozganda qidirib topib berish
-@dp.message(F.text & ~F.text.startswith("/"))
-async def search_anime(message: types.Message):
-    query = message.text.lower()
+# --- ANIME QISMLARINI 10 TALIK QILIB CHIQARISH ---
+@dp.callback_query(F.data.startswith("episodes_"))
+async def show_episodes(callback: types.CallbackQuery):
+    data = callback.data.split("_")
+    anime_id = data[1]
+    offset = int(data[2])
     
-    conn = sqlite3.connect("animelar.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT title, file_id FROM movies WHERE title LIKE ?", (f"%{query}%",))
-    result = cursor.fetchone()
+    
+    # Berilgan animening offset bo'yicha 10 talik qismlarini olamiz
+    cursor.execute(
+        "SELECT episode_number, file_id FROM episodes WHERE anime_id = ? ORDER BY episode_number ASC LIMIT 10 OFFSET ?", 
+        (anime_id, offset)
+    )
+    episodes = cursor.fetchall()
+    
+    if not episodes:
+        conn.close()
+        await callback.answer("❌ Bu animening boshqa qismlari yo'q.", show_alert=True)
+        return
+    
+    # 10 ta qismni ketma-ket yuboramiz
+    for ep_num, file_id in episodes:
+        try:
+            await callback.message.answer_video(video=file_id, caption=f"🎬 {ep_num}-qism")
+        except Exception as e:
+            logging.error(f"Videoni yuborishda xatolik ({ep_num}-qism): {e}")
+    
+    # Keyingi 10 talik bormi yoki yo'qligini tekshiramiz
+    next_offset = offset + 10
+    cursor.execute("SELECT COUNT(*) FROM episodes WHERE anime_id = ? AND episode_number > ?", (anime_id, next_offset))
+    count = cursor.fetchone()[0]
     conn.close()
     
-    if result:
-        title, file_id = result
-        await message.answer_video(
-            video=file_id,
-            caption=f"🎬 <b>{title}</b>\n\n@barcha_animelar_shuyerda_bot"
-        )
+    # Agar keyingi qismlar mavjud bo'lsa, tugma chiqaramiz
+    if count > 0:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="➡️ Keyingi 10 talik", callback_data=f"episodes_{anime_id}_{next_offset}")
+        await callback.message.answer("Boshqa qismlarni ko'rish uchun pastdagi tugmani bosing:", reply_markup=builder.as_markup())
     else:
-        await message.answer("❌ Kechirasiz, bu nomdagi anime topilmadi.")
+        await callback.message.answer("🎉 Shu bilan anime qismlari tugadi!")
+    
+    await callback.answer()
 
-# Botni ishga tushirish
+# --- BOTNI ISHGA TUSHIRISH ---
 async def main():
-    db_start()
+    init_db()  # Bazani tayyorlash
     print("Bot ishga tushdi...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
     
