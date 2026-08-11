@@ -2,23 +2,33 @@ import asyncio
 import logging
 import sqlite3
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.enums import ContentType
+from aiogram.filters import Command
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 
 # --- SOZLAMALAR ---
-TOKEN = "8905864709:AAHz1g4blQ9SzBb3WNTBu_MnneeCXM7VSj8"
-CHANNEL_ID = -1004301284199  # Sizning kanal ID raqamingiz
+BOT_TOKEN = "8905864709:AAHz1g4blQ9SzBb3WNTBu_MnneeCXM7VSj8"
+CHANNEL_ID = -1004136665979  # Yangi kanal ID raqamingiz o'rnatildi
+ADMIN_ID = 4301284199  # Sizning ID raqamingiz
+DB_NAME = "animelar.db"
 
-bot = Bot(token=TOKEN)
+logging.basicConfig(level=logging.INFO)
+
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# 1. Ma'lumotlar bazasini yaratish (Animelar va Qismlar jadvali)
-def db_start():
-    conn = sqlite3.connect("animelar.db")
+class AddAnimeState(StatesGroup):
+    waiting_for_video = State()
+    waiting_for_title = State()
+    waiting_for_episode = State()
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS animes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL
+            title TEXT NOT NULL COLLATE NOCASE
         )
     """)
     cursor.execute("""
@@ -33,104 +43,92 @@ def db_start():
     conn.commit()
     conn.close()
 
-# 2. Kanalga video tashlansa, avtomatik bazaga saqlash
-# Izoh formati shunday bo'lishi kerak: Anime Nomi | Qism Raqami (Masalan: Naruto | 1)
-@dp.channel_post(F.content_type == ContentType.VIDEO)
-async def auto_save_anime(message: types.Message):
-    if message.chat.id == CHANNEL_ID:
-        caption = message.caption
-        if not caption or "|" not in caption:
-            return  # Agar format mos kelmasa tashlab yuboradi
-        
-        try:
-            parts = caption.split("|")
-            anime_title = parts[0].strip().lower()
-            ep_num = int(parts[1].strip())
-            file_id = message.video.file_id
-        except Exception:
-            return
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        f"Salom, {message.from_user.first_name}!\n"
+        "Animix botiga xush kelibsiz. Ko'rmoqchi bo'lgan animengiz nomini yozing (masalan: Naruto).\n\n"
+        "📹 *Admin uchun:* Bazaga video qo'shish uchun /add buyrug'ini bosing."
+    )
 
-        conn = sqlite3.connect("animelar.db")
-        cursor = conn.cursor()
-        
-        # Animeni bazadan qidiramiz, yo'q bo'lsa ochamiz
-        cursor.execute("SELECT id FROM animes WHERE title = ?", (anime_title,))
-        anime = cursor.fetchone()
-        
-        if anime:
-            anime_id = anime[0]
-        else:
-            cursor.execute("INSERT INTO animes (title) VALUES (?)", (anime_title,))
-            conn.commit()
-            anime_id = cursor.lastrowid
-            
-        # Qismni bazaga yozamiz (agar shu qism oldin yozilgan bo'lmasa)
-        cursor.execute(
-            "SELECT id FROM episodes WHERE anime_id = ? AND episode_number = ?", 
-            (anime_id, ep_num)
-        )
-        if not cursor.fetchone():
-            cursor.execute(
-                "INSERT INTO episodes (anime_id, episode_number, file_id) VALUES (?, ?, ?)", 
-                (anime_id, ep_num, file_id)
-            )
-            conn.commit()
-            print(f"Yangi qo'shildi: {anime_title} — {ep_num}-qism")
-            
-        conn.close()
-
-# 3. Foydalanuvchi botga yozganda (Anime nomi yoki qism raqami)
-@dp.message(F.text & ~F.text.startswith("/"))
-async def search_anime(message: types.Message):
-    text = message.text.strip().lower()
+# --- ADMIN: VIDEO QO'SHISH ---
+@dp.message(Command("add"))
+async def cmd_add(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Kechirasiz, bu buyruq faqat admin uchun.")
+        return
     
-    conn = sqlite3.connect("animelar.db")
+    await message.answer("🎬 Iltimos, bazaga qo'shmoqchi bo'lgan **videoni** yuboring:")
+    await state.set_state(AddAnimeState.waiting_for_video)
+
+@dp.message(AddAnimeState.waiting_for_video, F.video)
+async def process_video(message: types.Message, state: FSMContext):
+    file_id = message.video.file_id
+    await state.update_data(file_id=file_id)
+    
+    await message.answer("✍️ Endi bu anime nomini yozing (masalan: Naruto):")
+    await state.set_state(AddAnimeState.waiting_for_title)
+
+@dp.message(AddAnimeState.waiting_for_title)
+async def process_title(message: types.Message, state: FSMContext):
+    anime_title = message.text.strip()
+    await state.update_data(anime_title=anime_title)
+    
+    await message.answer("🔢 Endi bu videoning **nechanchi qism** ekanini raqamda yozing (masalan: 1):")
+    await state.set_state(AddAnimeState.waiting_for_episode)
+
+@dp.message(AddAnimeState.waiting_for_episode)
+async def process_episode(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Iltimos, faqat raqam kiriting (masalan: 1):")
+        return
+    
+    ep_num = int(message.text)
+    data = await state.get_data()
+    file_id = data["file_id"]
+    anime_title = data["anime_title"]
+    
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Agar foydalanuvchi raqam yozgan bo'lsa (masalan: "2", "3")
-    if text.isdigit():
-        target_ep = int(text)
-        # Hozircha oddiy qidiruv: shu qism raqami bor bo'lgan animelarni tekshiramiz
-        cursor.execute("""
-            SELECT A.id, A.title, E.file_id 
-            FROM episodes E 
-            JOIN animes A ON E.anime_id = A.id 
-            WHERE E.episode_number = ?
-        """, (target_ep,))
-        # Soddaroq ishlashi uchun oxirgi qidirilgan yoki mos kelganini olamiz
-        results = cursor.fetchall()
-        
-        if results and len(results) == 1:
-            anime_id, anime_title, file_id = results[0]
-            
-            # Undan keyingi qism borligini tekshiramiz
-            cursor.execute("SELECT COUNT(*) FROM episodes WHERE anime_id = ? AND episode_number = ?", (anime_id, target_ep + 1))
-            has_next = cursor.fetchone()[0] > 0
-            conn.close()
-            
-            caption = f"🎬 <b>{anime_title.title()}</b> — {target_ep}-qism\n\n@barcha_animelar_shuyerda_bot"
-            if has_next:
-                caption += f"\n\n👉 Keyingi qismni ({target_ep + 1}-qism) ko'rmoqchi bo'lsangiz, <b>{target_ep + 1}</b> raqamini yuboring."
-                
-            await message.answer_video(video=file_id, caption=caption, parse_mode="HTML")
-            return
-        else:
-            conn.close()
-            await message.answer("❌ Bu raqamdagi qism topilmadi yoki bir nechta mos keldi. Iltimos, avval anime nomini to'liq yuboring.")
-            return
+    cursor.execute("SELECT id FROM animes WHERE title LIKE ?", (anime_title,))
+    anime = cursor.fetchone()
+    
+    if anime:
+        anime_id = anime[0]
+    else:
+        cursor.execute("INSERT INTO animes (title) VALUES (?)", (anime_title,))
+        conn.commit()
+        anime_id = cursor.lastrowid
+    
+    cursor.execute(
+        "INSERT INTO episodes (anime_id, episode_number, file_id) VALUES (?, ?, ?)", 
+        (anime_id, ep_num, file_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    await state.clear()
+    await message.answer(f"✅ Muvaffaqiyatli saqlandi!\n🎬 Anime: {anime_title}\n📌 Qism: {ep_num}-qism")
 
-    # Odatiy holat: Foydalanuvchi anime nomini yozdi (masalan: Naruto)
-    cursor.execute("SELECT id, title FROM animes WHERE title LIKE ?", (f"%{text}%",))
+# --- FOYDALANUVCHILAR UCHUN: ANIME QIDIRISH ---
+@dp.message(F.text & ~F.text.startswith("/"))
+async def search_anime(message: types.Message):
+    query_text = message.text.strip()
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id, title FROM animes WHERE title LIKE ?", (f"%{query_text}%",))
     anime = cursor.fetchone()
     
     if not anime:
         conn.close()
-        await message.answer("❌ Kechirasiz, bu nomdagi anime topilmadi.")
+        await message.answer("❌ Bunday nomdagi anime topilmadi.")
         return
-        
+    
     anime_id, anime_title = anime
     
-    # Har doim faqat 1-qismni olamiz
     cursor.execute(
         "SELECT file_id FROM episodes WHERE anime_id = ? AND episode_number = 1", 
         (anime_id,)
@@ -139,29 +137,29 @@ async def search_anime(message: types.Message):
     
     if not episode:
         conn.close()
-        await message.answer(f"🎬 <b>{anime_title.title()}</b> topildi, lekin 1-qismi hali yuklanmagan.", parse_mode="HTML")
+        await message.answer(f"🎬 <b>{anime_title}</b> topildi, lekin 1-qismi hali bazaga yuklanmagan.", parse_mode="HTML")
         return
-        
+    
     file_id = episode[0]
     
-    # 2-qism borligini tekshiramiz
     cursor.execute("SELECT COUNT(*) FROM episodes WHERE anime_id = ? AND episode_number = 2", (anime_id,))
     has_next = cursor.fetchone()[0] > 0
     conn.close()
     
-    caption = f"🎬 <b>{anime_title.title()}</b> — 1-qism\n\n@barcha_animelar_shuyerda_bot"
+    caption = f"🎬 <b>{anime_title} — 1-qism</b>"
     if has_next:
         caption += "\n\n👉 Ikkinchi qismni ko'rmoqchi bo'lsangiz, <b>2</b> raqamini yuboring."
-        
-    await message.answer_video(video=file_id, caption=caption, parse_mode="HTML")
+    
+    try:
+        await message.answer_video(video=file_id, caption=caption, parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"Videoni yuborishda xatolik: {e}")
 
-# Botni ishga tushirish
 async def main():
-    db_start()
+    init_db()
     print("Bot ishga tushdi...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
     
